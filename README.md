@@ -200,6 +200,54 @@ outputs:
 
 Useful for analytics, auditing, or feeding into downstream tools.
 
+### Command (pipe to anything)
+
+Route emails as JSON to any shell command. Each email is one JSON line on stdin.
+Use this for vector DBs, databases, APIs, or any custom pipeline:
+
+```yaml
+outputs:
+  command:
+    enabled: true
+    cmd: "python3 vectorize_to_chroma.py"
+    categories: [newsletter, actionable]  # optional filter
+```
+
+The command receives JSON objects with: `category`, `sender`, `subject`, `message_id`, `date`, `snippet`, `summary`, `confidence`, `metadata`.
+
+Examples:
+- `cmd: "python3 vectorize.py"` -- embed into ChromaDB/Qdrant/Pinecone
+- `cmd: "jq -c . >> emails.jsonl"` -- append to JSONL file
+- `cmd: "sqlite3 emails.db '.import /dev/stdin emails'"` -- insert into SQLite
+
+### Custom Script (Python plugin)
+
+Call a Python function per email for full control:
+
+```yaml
+outputs:
+  custom_script:
+    enabled: true
+    script: "./my_output.py"
+    function: "handle_email"
+    categories: [newsletter]
+```
+
+Your script must define a function like:
+
+```python
+def handle_email(result: dict, config: dict):
+    """Called once per email. result has category, sender, subject, snippet, etc."""
+    import chromadb
+    client = chromadb.PersistentClient(path="./chroma_data")
+    collection = client.get_or_create_collection("emails")
+    collection.add(
+        documents=[result["snippet"]],
+        metadatas=[{"category": result["category"], "sender": result["sender"]}],
+        ids=[result["message_id"]],
+    )
+```
+
 ## Running on a Schedule
 
 Use `crontab` or a job scheduler:

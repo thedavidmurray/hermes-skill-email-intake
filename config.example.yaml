@@ -174,6 +174,25 @@ outputs:
     enabled: true
     path: ./logs/email_triage.json
 
+  # Pipe results as JSON to any shell command
+  # Each email is one JSON line on stdin. Use this for:
+  #   - Vector DBs (ChromaDB, Qdrant, Pinecone)
+  #   - Databases (SQLite, Postgres)
+  #   - APIs (Notion, Airtable, Linear)
+  #   - Anything you can script
+  command:
+    enabled: false
+    cmd: ""  # e.g., "python3 vectorize.py" or "jq -c . >> emails.jsonl"
+    categories: []  # empty = all categories. Or: [newsletter, actionable]
+
+  # Call a Python function per email (full plugin system)
+  # Your script must define a function that accepts (result_dict, config)
+  custom_script:
+    enabled: false
+    script: ""        # e.g., "./my_output.py"
+    function: "handle_email"  # function name to call
+    categories: []    # empty = all categories
+
 # Security settings
 security:
   # Scrub sensitive patterns from extracted content

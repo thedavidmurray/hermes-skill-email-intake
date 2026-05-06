@@ -206,6 +206,123 @@ def output_summarize(result: ClassificationResult, config: dict) -> str:
         return ""
 
 
+def output_command(results: List[ClassificationResult], config: dict):
+    """Pipe each result as JSON to a shell command.
+
+    Use this to route emails into any system: vector DBs, databases,
+    Notion, Airtable, custom scripts, etc. The command receives one
+    JSON object per line on stdin.
+
+    Config example:
+        outputs:
+          command:
+            enabled: true
+            cmd: "python3 my_vectorize.py"
+            # Or pipe to jq, sqlite, curl, etc:
+            # cmd: "jq -c . >> emails.jsonl"
+            # cmd: "python3 -c 'import sys,json,chromadb; ...'"
+            categories: [newsletter, actionable]  # optional filter
+    """
+    cmd_config = config.get("outputs", {}).get("command", {})
+    cmd = cmd_config.get("cmd", "")
+    if not cmd:
+        return
+
+    allowed = cmd_config.get("categories")  # None = all
+    filtered = [r for r in results if not allowed or r.category in allowed]
+    if not filtered:
+        return
+
+    payload = "\n".join(
+        json.dumps({
+            "category": r.category,
+            "reason": r.reason,
+            "sender": r.sender,
+            "subject": r.subject,
+            "message_id": r.message_id,
+            "date": r.date,
+            "snippet": r.extracted_snippet,
+            "summary": r.summary,
+            "confidence": r.confidence,
+            "metadata": r.metadata,
+        })
+        for r in filtered
+    )
+
+    try:
+        proc = subprocess.run(
+            cmd, input=payload, shell=True,
+            capture_output=True, text=True, timeout=60,
+        )
+        if proc.returncode != 0:
+            print(f"  Command output error: {proc.stderr[:200]}", file=sys.stderr)
+        else:
+            print(f"  Command output: piped {len(filtered)} emails to: {cmd[:60]}")
+    except Exception as e:
+        print(f"  Command output error: {e}", file=sys.stderr)
+
+
+def output_custom_script(results: List[ClassificationResult], config: dict):
+    """Import and call a user-provided Python function per email.
+
+    Config example:
+        outputs:
+          custom_script:
+            enabled: true
+            script: "./my_output.py"
+            function: "handle_email"  # must accept (result_dict, config)
+            categories: [newsletter]  # optional filter
+    """
+    script_config = config.get("outputs", {}).get("custom_script", {})
+    script_path = script_config.get("script", "")
+    func_name = script_config.get("function", "handle_email")
+    if not script_path:
+        return
+
+    allowed = script_config.get("categories")
+    filtered = [r for r in results if not allowed or r.category in allowed]
+    if not filtered:
+        return
+
+    # Import the script dynamically
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("custom_output", script_path)
+    if not spec or not spec.loader:
+        print(f"  Custom script not found: {script_path}", file=sys.stderr)
+        return
+
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        print(f"  Custom script import error: {e}", file=sys.stderr)
+        return
+
+    handler = getattr(mod, func_name, None)
+    if not callable(handler):
+        print(f"  Custom script: function '{func_name}' not found in {script_path}", file=sys.stderr)
+        return
+
+    for r in filtered:
+        try:
+            handler({
+                "category": r.category,
+                "reason": r.reason,
+                "sender": r.sender,
+                "subject": r.subject,
+                "message_id": r.message_id,
+                "date": r.date,
+                "snippet": r.extracted_snippet,
+                "summary": r.summary,
+                "confidence": r.confidence,
+                "metadata": r.metadata,
+            }, config)
+        except Exception as e:
+            print(f"  Custom script error on {r.message_id}: {e}", file=sys.stderr)
+
+    print(f"  Custom script: processed {len(filtered)} emails via {script_path}:{func_name}")
+
+
 def run_outputs(results: List[ClassificationResult], config: dict):
     """Run all enabled output backends."""
     outputs = config.get("outputs", {})
@@ -221,6 +338,12 @@ def run_outputs(results: List[ClassificationResult], config: dict):
 
     if outputs.get("json_log", {}).get("enabled", True):
         output_json_log(results, config)
+
+    if outputs.get("command", {}).get("enabled", False):
+        output_command(results, config)
+
+    if outputs.get("custom_script", {}).get("enabled", False):
+        output_custom_script(results, config)
 
     # Newsletter notes for newsletter-category results
     for r in results:
