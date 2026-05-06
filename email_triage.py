@@ -33,7 +33,7 @@ except ImportError:
 from classifier import EmailClassifier, ClassificationResult
 from sanitizer import sanitize_content, strip_urls, strip_signatures
 from providers import create_provider
-from outputs import run_outputs, output_summarize
+from outputs import run_outputs, output_console, output_summarize
 
 
 def load_config(path: str) -> dict:
@@ -172,7 +172,10 @@ def main():
             }
 
     # Run output backends
-    run_outputs(results, config)
+    if args.report_only:
+        output_console(results, config)
+    else:
+        run_outputs(results, config)
 
     if not args.dry_run and not args.report_only:
         save_state(state, config)
