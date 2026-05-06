@@ -4,13 +4,16 @@
 # Email provider settings
 provider:
   # "gmail_cli" uses a CLI tool (like gws) to access Gmail API
-  # "gmail_api" uses Gmail API directly with OAuth credentials
+  # "gmail_api" is planned but not yet implemented
   type: gmail_cli
   cli_path: gws  # path to your Gmail CLI tool
-  account: me    # Gmail userId
+  # Use "me" for the authenticated account, or a full email address
+  # for delegation / service accounts.
+  account: me
 
 # Classification rules
-# Each rule has: name, match conditions, priority (lower = checked first)
+# Rules are evaluated in priority order (lower = checked first).
+# First matching rule wins. Domain matching is exact (no substring).
 classification:
   # Auth/security signals - highest priority
   auth:
@@ -41,6 +44,8 @@ classification:
       - password expir
     # Requires BOTH a domain match AND a term match
     require_both: true
+    # Gmail actions to take on auth emails (optional)
+    actions: [star, leave_unread]
 
   # Suspicious - phishing/scam indicators
   suspicious:
@@ -59,14 +64,16 @@ classification:
       - lottery
       - prize
       - you have won
-    # Triggers when 2+ terms match
+    # Triggers when 2+ terms match (configurable)
     min_matches: 2
+    actions: [leave_unread]
 
   # Actionable - trusted vendor, not auth
   actionable:
     priority: 30
-    # Uses the same domains as auth, but only when auth terms are absent
+    # Reuses the same domain list as auth
     inherit_domains_from: auth
+    actions: [mark_read]
 
   # Social digests
   social:
@@ -78,6 +85,7 @@ classification:
       - linkedin
       - facebook
       - notifications@github.com
+    actions: [mark_read]
 
   # Newsletters
   newsletter:
@@ -94,11 +102,13 @@ classification:
       - sendgrid
     # Also triggers on List-Unsubscribe header
     check_unsubscribe_header: true
+    actions: [mark_read]
 
   # Everything else
   noise:
     priority: 100
     # Catch-all for unrecognized senders
+    actions: [mark_read]
 
 # Interpretation layers
 # Controls how much processing happens before output.
@@ -115,8 +125,9 @@ interpretation:
       enabled: true
       settings:
         max_snippet_length: 1500
-        strip_urls: true       # replace URLs with [URL stripped]
-        strip_signatures: true # remove email signatures
+        strip_urls: true         # replace URLs with [URL stripped]
+        strip_signatures: true   # remove email signatures
+        fetch_full_body: false   # set true to fetch full MIME body instead of snippet
 
     # Layer 3: Summarization
     # Generates a 1-2 sentence summary of the email's purpose
@@ -125,24 +136,6 @@ interpretation:
       settings:
         llm_command: ""  # e.g., "llm -m gpt-4o-mini" or "claude -p"
         max_tokens: 150
-
-    # Layer 4: Knowledge base integration
-    # Routes newsletters and actionable items to your KB
-    - name: knowledge_base
-      enabled: false
-      settings:
-        # Where to write newsletter notes
-        newsletter_dir: "./inbox/newsletters"
-        # Frontmatter format for notes
-        frontmatter_template: |
-          ---
-          type: email-newsletter
-          sender: "{sender}"
-          subject: "{subject}"
-          date: "{date}"
-          gmail_id: "{message_id}"
-          captured: "{today}"
-          ---
 
 # Output backends
 # Where classified emails get reported
@@ -159,27 +152,41 @@ outputs:
     # One file per run, or one file per email
     mode: per_run  # "per_run" or "per_email"
 
+  # Newsletter notes (markdown with frontmatter)
+  # Only processes emails classified as "newsletter"
+  newsletter:
+    enabled: false
+    output_dir: ./inbox/newsletters
+    frontmatter_template: |
+      ---
+      type: email-newsletter
+      sender: "{sender}"
+      subject: "{subject}"
+      date: "{date}"
+      gmail_id: "{message_id}"
+      captured: "{today}"
+      ---
+
   # Post to webhook (Slack, Discord, etc.)
+  # SSRF-protected: private/internal IPs are blocked
   webhook:
     enabled: false
     url: ""
-    # Template for webhook payload
     payload_template: |
       {
         "text": "[{category}] {sender}: {subject}"
       }
 
-  # Write JSON log
+  # Append results as JSONL (one JSON object per line)
   json_log:
     enabled: true
-    path: ./logs/email_triage.json
+    path: ./logs/email_triage.jsonl
 
   # Pipe results as JSON to any shell command
   # Each email is one JSON line on stdin. Use this for:
   #   - Vector DBs (ChromaDB, Qdrant, Pinecone)
   #   - Databases (SQLite, Postgres)
   #   - APIs (Notion, Airtable, Linear)
-  #   - Anything you can script
   command:
     enabled: false
     cmd: ""  # e.g., "python3 vectorize.py" or "jq -c . >> emails.jsonl"
@@ -190,28 +197,22 @@ outputs:
   custom_script:
     enabled: false
     script: ""        # e.g., "./my_output.py"
-    function: "handle_email"  # function name to call
+    function: "handle_email"
     categories: []    # empty = all categories
 
 # Security settings
 security:
-  # Scrub sensitive patterns from extracted content
-  scrub_content: true
-  # Strip all URLs from email content before storage
-  strip_urls: true
-  # Default classification when ambiguous
-  default_category: suspicious
-  # Maximum email body size to process (bytes)
-  max_body_size: 102400  # 100KB
+  scrub_content: true       # redact API keys, file paths, credentials
+  strip_urls: true           # replace URLs with [URL stripped]
+  default_category: suspicious  # when classification is ambiguous
+  max_body_size: 102400      # truncate before regex (prevents ReDoS)
 
 # State tracking
 state:
-  # Track processed message IDs to avoid re-processing
   enabled: true
   path: ./state/processed.json
 
-# Schedule (informational - actual scheduling is external)
+# Schedule (informational only — not read by this tool. Use cron or your scheduler.)
 schedule:
-  interval: hourly
   lookback: "newer_than:1d"
   max_per_run: 50

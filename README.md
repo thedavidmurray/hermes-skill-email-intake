@@ -1,409 +1,434 @@
-# Email Inbox Triage
+# Email Triage
 
-Classify and route unread Gmail messages in seconds. Emails get categorized (auth, actionable, suspicious, newsletter, social, noise), then routed to outputs of your choice: console, markdown files, webhooks, or JSON logs.
+Rule-based email classifier that routes messages to the right handler. Pluggable providers, 7 output backends, configurable Gmail actions, and hardcoded security that blocks phishing.
 
-The tool uses configurable rules to classify, then optional "interpretation layers" that extract content, summarize, and route to your knowledge base before anything is stored or reported.
+## Features
+
+**Classification**: 6-category priority-based rules engine (auth, actionable, suspicious, newsletter, social, noise). Exact domain matching with subdomain support. Weighted scoring with configurable signal thresholds.
+
+**Interpretation layers**: Optional content extraction and LLM summarization. Strips URLs, signatures, and PII before storage.
+
+**Output backends**: Console (table/JSON), markdown files, newsletter-organized archives, webhooks (SSRF-protected), JSONL logs, shell commands, and Python plugins.
+
+**Per-category actions**: Configure Gmail operations per rule—star, archive, label, mark read.
+
+**Extensible providers**: Gmail CLI out of the box. Add Outlook, FastMail, IMAP via ABC subclass.
+
+**State tracking**: Atomic writes. User feedback loop: reclassify mismatches and review recent decisions.
 
 ## Install
 
+Requires Python 3.8+ and PyYAML.
+
 ```bash
-git clone https://github.com/thedavidmurray/hermes-skill-email-intake.git
-cd hermes-skill-email-intake
 pip install pyyaml
 ```
 
-That's it. Only dependency: PyYAML. Python 3.8+.
+Copy `config.example.yaml` to `config.yaml` and update the `provider.cli_path` to your Gmail CLI tool (e.g., `gws`, `gmail-cli`).
 
-## Quick Start (5 minutes)
+## Quick Start
 
-### 1. Set up your Gmail CLI tool
+1. **Configure your provider:**
+   ```yaml
+   provider:
+     type: gmail_cli
+     cli_path: gws
+     account: me
+   ```
 
-You need a way to talk to Gmail. Use the `gws` CLI tool (included in Edgeless projects), or write your own provider in `providers.py`.
+2. **Add trusted domains to auth rules:**
+   ```yaml
+   classification:
+     auth:
+       priority: 10
+       domains: [github.com, anthropic.com, stripe.com]
+       terms: [two-factor, otp, security alert]
+       require_both: true
+       actions: [star, leave_unread]
+   ```
 
-Verify it works:
+3. **Run classification:**
+   ```bash
+   python email_triage.py
+   ```
+
+4. **Review and adjust:**
+   ```bash
+   python email_triage.py --review --review-last 30
+   ```
+
+5. **Correct a misclassification:**
+   ```bash
+   python email_triage.py --reclassify MSG_ID actionable
+   ```
+
+## Usage
+
 ```bash
-gws gmail users messages list --params '{"userId": "me", "maxResults": 1}'
+# Run with config.yaml
+python email_triage.py
+
+# Custom config
+python email_triage.py --config my.yaml
+
+# Classify without Gmail side-effects
+python email_triage.py --dry-run
+
+# Print classifications only, no state/reads
+python email_triage.py --report-only
+
+# Show recently classified (default 20)
+python email_triage.py --review --review-last 50
+
+# Override classification
+python email_triage.py --reclassify MSG_ID new_category
+
+# Debug mode
+python email_triage.py --verbose
+
+# Custom Gmail query
+python email_triage.py --lookback "newer_than:3d"
+
+# Limit emails per run
+python email_triage.py --max 100
 ```
 
-### 2. Copy the example config
+Exit codes: 0 (success), 1 (config error), 2 (provider error).
 
-```bash
-cp config.example.yaml config.yaml
-```
+## Classification Rules
 
-### 3. Edit config.yaml
+Rules are evaluated in **priority order** (lower number = checked first). First clear winner wins.
 
-Set your Gmail CLI tool path (line 9):
+### Rule Anatomy
+
 ```yaml
-provider:
-  type: gmail_cli
-  cli_path: gws  # or /path/to/your/cli/tool
+auth:                           # Category name
+  priority: 10                  # Lower = higher priority
+  domains: [github.com]         # Domain list (exact + subdomain match)
+  terms: [two-factor, otp]      # Text patterns (case-insensitive)
+  require_both: true            # Both domain AND term must match
+  sender_patterns: []           # Regex patterns on sender email
+  check_unsubscribe_header: false  # Trigger on List-Unsubscribe header
+  min_matches: 1                # Suspicious rules need 2+
+  inherit_domains_from: auth    # Reuse domain list from another rule
+  actions: [star]               # Per-category Gmail actions (below)
 ```
 
-That's the only required change. All other settings have smart defaults.
+### Domain Matching
 
-### 4. Test with --dry-run
+- **Exact match**: `github.com` matches `noreply@github.com`
+- **Subdomain match**: `github.com` also matches `mail.github.com`
+- **No suffix match**: `github.com` does NOT match `github.com.evil.net`
 
-```bash
-python email_triage.py --config config.yaml --dry-run
-```
+### Special Rules
 
-You'll see classification results printed to console. Nothing is marked read. No files are written.
+**Require both**: Set `require_both: true` to demand both a domain AND term match (used by auth to prevent false positives on spoofed headers).
 
-### 5. Run for real
+**Inherit domains**: Set `inherit_domains_from: auth` to reuse the domain list from the auth rule. Saves duplication in actionable rules.
 
-```bash
-python email_triage.py --config config.yaml
-```
+**Min matches**: Set `min_matches: 2` for suspicious rules to require 2+ term hits (not just 1).
 
-Unread emails get classified, marked read, and results go to your configured outputs. Summary prints to console.
+**Noreply handling**: Mild positive signal (+1) for auth, mild negative (-1) for actionable. Distinguishes automated vendor emails from human-sent messages.
 
-## How Classification Works
+### Confidence Scoring
 
-| Category | Trigger | Examples |
-|----------|---------|----------|
-| **auth** | Trusted domain + auth term | GitHub security alert, Stripe 2FA, Cloudflare OTP verification |
-| **actionable** | Trusted domain, no auth signal | Invoice from vendor, shipping notification from seller |
-| **suspicious** | 2+ phishing terms | "verify your account", "wire transfer", "urgent action needed" |
-| **newsletter** | List-Unsubscribe header or newsletter sender | Substack, Beehiiv, any sender matching newsletter patterns |
-| **social** | Social platform digest | Slack digest, Twitter notifications, Discord summary |
-| **noise** | No recognizable signal | Unrecognized sender, no clear category |
-
-Each email is evaluated top-to-bottom. First matching rule wins.
-
-## Interpretation Layers: The Key Differentiator
-
-After classification, optional "layers" enrich the result:
-
-1. **extract** — Pulls the email snippet, strips URLs (safety), removes signatures
-2. **summarize** — Calls an LLM (Claude, GPT-4, etc.) to write a 1-2 sentence summary
-3. **knowledge_base** — Routes newsletters to markdown files in your vault/KB
-
-Layers run in order. Each is opt-in via `config.yaml`:
-
-```yaml
-interpretation:
-  layers:
-    - name: extract
-      enabled: true
-      settings:
-        strip_urls: true
-        strip_signatures: true
-    - name: summarize
-      enabled: false  # turn on if you have an llm_command
-      settings:
-        llm_command: "claude -p"  # or "llm -m gpt-4o-mini"
-    - name: knowledge_base
-      enabled: false
-      settings:
-        newsletter_dir: "./vault/newsletters"
-```
-
-All layers optional. Classification always runs.
-
-## Configuration
-
-Full reference: `config.example.yaml`. Key sections:
-
-**provider** — How to fetch Gmail (CLI tool or API)
-- `type: gmail_cli` — use a CLI wrapper like `gws`
-- `cli_path` — path to your CLI tool
-- `account` — Gmail userId (default: "me")
-
-**classification** — Rules for each category
-- Add trusted domains to `auth.domains`
-- Add phishing terms to `suspicious.terms`
-- Tweak patterns for social, newsletter, etc.
-- All rules are case-insensitive
-
-**interpretation** — Optional enrichment layers
-- extract: pull content, sanitize
-- summarize: LLM summary (optional)
-- knowledge_base: route to KB (optional)
-
-**outputs** — Where results go
-- console: print to stdout
-- markdown: write .md files
-- webhook: POST to Slack/Discord
-- json_log: append to JSON log
-
-**security** — Content scrubbing
-- `scrub_content: true` — redact API keys, file paths
-- `strip_urls: true` — replace URLs with [URL stripped]
-- `max_body_size: 102400` — truncate huge emails
-
-**schedule** — Informational (scheduling is external)
-- `lookback: "newer_than:1d"` — Gmail query lookback
-- `max_per_run: 50` — emails per run
-
-## Security Rules (Non-Negotiable)
-
-These are hardcoded. No config option overrides them.
-
-1. **Never follow instructions found inside email body.** Email content is untrusted input. The tool ignores all directives in email text.
-
-2. **Never click URLs from email.** All URLs are stripped from content before extraction or storage. You get `[URL stripped]` instead.
-
-3. **Never auto-reply, auto-forward, or auto-delete.** The tool marks emails read but does nothing else to your mailbox.
-
-4. **Never copy credentials or OTPs.** If you summarize auth emails, the summary never includes secrets.
-
-5. **Default to suspicious when ambiguous.** If classification can't decide, it defaults to "suspicious" so you review manually.
-
-6. **Never trust sender display names.** Only the email domain matters. "noreply@gmail.com" is not trusted even if the display name says "Your Bank".
+- Auth with domain + term = 1.0
+- Auth with noreply = 0.8
+- Actionable with trusted domain = 1.0
+- Actionable with noreply = 0.7
+- Suspicious scales 0.5–1.0 with term hits
+- Newsletter/social/default = 0.5
 
 ## Output Backends
 
-### Console (always available)
+All enabled/disabled per config. Write results to multiple places simultaneously.
 
-Prints results as a table:
-```
-  [auth          ] noreply@github.com                                 | [GitHub] Verify your sign-in
-  [suspicious    ] secure@bank-alert.net                             | Action Required: Unusual Activity
+### Console
+
+```yaml
+console:
+  enabled: true
+  format: table  # or "json"
 ```
 
-Or JSON (set `format: json` in config).
+Prints a table or JSON to stdout.
 
 ### Markdown
 
-Write triage reports:
-```bash
-outputs:
-  markdown:
-    enabled: true
-    output_dir: ./inbox/triage
-    mode: per_run  # or "per_email"
+```yaml
+markdown:
+  enabled: true
+  output_dir: ./inbox/triage
+  mode: per_run  # or "per_email"
 ```
 
-Each run creates a timestamped file like `triage-2026-05-05-1430.md` with classification summary.
+Writes YAML frontmatter + body to file(s). `per_run` = one file per execution; `per_email` = one file per message.
+
+### Newsletter
+
+```yaml
+newsletter:
+  enabled: true
+  output_dir: ./inbox/newsletters
+  frontmatter_template: |
+    ---
+    type: email-newsletter
+    sender: "{sender}"
+    subject: "{subject}"
+    date: "{date}"
+    gmail_id: "{message_id}"
+    captured: "{today}"
+    ---
+```
+
+Routes only newsletter-classified emails to `output_dir/{sender_domain}/` with message-ID dedup in filenames.
 
 ### Webhook
 
-POST to Slack, Discord, etc.:
-```bash
-outputs:
-  webhook:
-    enabled: true
-    url: https://hooks.slack.com/services/...
-    payload_template: '{"text": "[{category}] {sender}: {subject}"}'
+```yaml
+webhook:
+  enabled: true
+  url: https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+  payload_template: |
+    {
+      "text": "[{category}] {sender}: {subject}"
+    }
 ```
+
+POSTs JSON to the URL. **SSRF-protected**: blocks requests to private IPs, link-local, localhost. Hostname resolution required; fails closed if resolution fails.
 
 ### JSON Log
 
-Append all results to a JSON file:
-```bash
-outputs:
-  json_log:
-    enabled: true
-    path: ./logs/email_triage.json
+```yaml
+json_log:
+  enabled: true
+  path: ./logs/email_triage.jsonl
 ```
 
-Useful for analytics, auditing, or feeding into downstream tools.
+Appends one JSON object per line (JSONL, not JSON array). No read-modify-write race conditions.
 
-### Command (pipe to anything)
-
-Route emails as JSON to any shell command. Each email is one JSON line on stdin.
-Use this for vector DBs, databases, APIs, or any custom pipeline:
+### Command
 
 ```yaml
-outputs:
-  command:
-    enabled: true
-    cmd: "python3 vectorize_to_chroma.py"
-    categories: [newsletter, actionable]  # optional filter
+command:
+  enabled: true
+  cmd: "python3 vectorize.py"
+  categories: []  # empty = all categories
 ```
 
-The command receives JSON objects with: `category`, `sender`, `subject`, `message_id`, `date`, `snippet`, `summary`, `confidence`, `metadata`.
+Pipes each email as JSON to stdin of `cmd`. Use for ChromaDB, Qdrant, SQLite, PostgreSQL, Notion, Airtable, Linear, etc. Uses `shlex.split`; no `shell=True`.
 
-Examples:
-- `cmd: "python3 vectorize.py"` -- embed into ChromaDB/Qdrant/Pinecone
-- `cmd: "jq -c . >> emails.jsonl"` -- append to JSONL file
-- `cmd: "sqlite3 emails.db '.import /dev/stdin emails'"` -- insert into SQLite
+Example: `cmd: "jq -c .category >> emails.jsonl"` to extract category field.
 
-### Custom Script (Python plugin)
-
-Call a Python function per email for full control:
+### Custom Script
 
 ```yaml
-outputs:
-  custom_script:
-    enabled: true
-    script: "./my_output.py"
-    function: "handle_email"
-    categories: [newsletter]
+custom_script:
+  enabled: true
+  script: "./my_output.py"
+  function: "handle_email"
+  categories: []  # empty = all categories
 ```
 
-Your script must define a function like:
+Calls a Python function for each email. Script must define a function matching `function_name(result_dict, config)`. Full plugin system with path validation (no traversal).
+
+Example script:
 
 ```python
-def handle_email(result: dict, config: dict):
-    """Called once per email. result has category, sender, subject, snippet, etc."""
-    import chromadb
-    client = chromadb.PersistentClient(path="./chroma_data")
-    collection = client.get_or_create_collection("emails")
-    collection.add(
-        documents=[result["snippet"]],
-        metadatas=[{"category": result["category"], "sender": result["sender"]}],
-        ids=[result["message_id"]],
-    )
+def handle_email(result_dict, config):
+    print(f"[{result_dict['category']}] {result_dict['sender']}")
 ```
 
-## Running on a Schedule
+## Interpretation Layers
 
-Use `crontab` or a job scheduler:
+Optional enrichment phases after classification. Run in order.
 
-```bash
-# Run every hour, look back 1 day, max 50 emails
-0 * * * * /usr/bin/python3 /path/to/email_triage.py --config /path/to/config.yaml
+### Extract
 
-# Run every 4 hours, look back 2 days
-0 */4 * * * /usr/bin/python3 /path/to/email_triage.py --config /path/to/config.yaml --lookback "newer_than:2d"
-
-# Run every day at 9 AM, limit to 100 emails
-0 9 * * * /usr/bin/python3 /path/to/email_triage.py --config /path/to/config.yaml --max 100
-```
-
-### Dry-run first
-
-Before automating, test with `--dry-run` to see classification results without side effects:
-```bash
-python email_triage.py --dry-run
-```
-
-This reads emails, classifies them, prints output, but marks nothing as read and writes no state.
-
-## CLI Options
-
-```bash
-python email_triage.py [OPTIONS]
-
---config PATH             Path to config file (YAML or JSON). Default: config.yaml
---lookback QUERY          Override Gmail lookback query. Default: "newer_than:1d"
---max N                   Override max emails per run. Default: 50
---dry-run                 Classify and report, but don't mark read or save state
---report-only             Print classifications, no side effects
-```
-
-## Advanced: Custom Providers
-
-To fetch email from Outlook, Fastmail, or your own system, extend `EmailProvider` in `providers.py`:
-
-```python
-class CustomProvider(EmailProvider):
-    def list_unread(self, query: str, max_results: int = 50) -> List[dict]:
-        # your code here
-        return [{"id": "...", "snippet": "...", ...}]
-    
-    def get_message(self, msg_id: str) -> Optional[dict]:
-        # your code here
-        return {...}
-    
-    def mark_read(self, msg_id: str) -> bool:
-        # your code here
-        return True
-
-    def extract_headers(self, msg: dict) -> dict:
-        # parse headers from your provider's format
-        return {"from": "...", "subject": "...", ...}
-```
-
-Then update `config.yaml`:
-```yaml
-provider:
-  type: custom_outlook
-```
-
-## Examples
-
-### Example 1: Quick review + console output
-
-Just want to see what's in your unread? Use defaults:
-```bash
-cp config.example.yaml config.yaml
-python email_triage.py
-```
-
-Console prints summary. Done.
-
-### Example 2: Archive newsletters to Obsidian vault
-
-Enable knowledge_base layer:
 ```yaml
 interpretation:
   layers:
     - name: extract
       enabled: true
-    - name: knowledge_base
-      enabled: true
       settings:
-        newsletter_dir: "./vault/newsletters"
+        max_snippet_length: 1500
+        strip_urls: true
+        strip_signatures: true
+        fetch_full_body: false
 ```
 
-Run it. Newsletters auto-save as markdown files with metadata.
+Pulls snippet from email. Strips zero-width Unicode + URLs. Removes RFC 3676 signatures (`-- \n`) and trailing Markdown delimiters. Set `fetch_full_body: true` to fetch full MIME body instead of Gmail snippet.
 
-### Example 3: Slack alerts for suspicious emails
+### Summarize
 
-Enable webhook:
 ```yaml
-outputs:
-  webhook:
-    enabled: true
-    url: https://hooks.slack.com/services/YOUR_WEBHOOK
-```
-
-Every suspicious email posts to Slack instantly.
-
-### Example 4: Summaries with Claude
-
-Enable summarize layer:
-```yaml
-interpretation:
-  layers:
     - name: summarize
       enabled: true
       settings:
         llm_command: "claude -p"
+        max_tokens: 150
 ```
 
-Each email gets a 1-2 sentence summary from Claude. Great for filtering actionable vs noise.
+Generates 1–2 sentence summary via LLM CLI. Secure: passes prompt via stdin (not argv). Set `llm_command: "llm -m gpt-4o-mini"` for other models.
 
-## Troubleshooting
+## Per-Category Gmail Actions
 
-**"Config not found"**
+Configure what happens to each classified email. Available actions:
+
+- `star` — add star
+- `archive` — remove from inbox
+- `mark_read` — remove UNREAD label
+- `leave_unread` — keep UNREAD
+- `label:LabelName` — add custom label
+- `mark_spam` — move to spam
+
+Example:
+
+```yaml
+classification:
+  auth:
+    actions: [star, leave_unread]
+  newsletter:
+    actions: [label:Newsletters, archive, mark_read]
+  suspicious:
+    actions: [leave_unread]
+  actionable:
+    actions: [mark_read]
+```
+
+Actions execute in order (atomic per message). Dry-run skips them.
+
+## State & User Feedback
+
+Tracks processed message IDs with category, reason, and timestamp. Stored in `state.path` (default `./state/processed.json`).
+
 ```bash
-cp config.example.yaml config.yaml
-python email_triage.py --config config.yaml
+# Show 50 most recent classifications
+python email_triage.py --review --review-last 50
+
+# Fix a misclassification (updates state file)
+python email_triage.py --reclassify 1234abc5d6e7f8g actionable
 ```
 
-**"PyYAML required"**
-```bash
-pip install pyyaml
+State file is atomically written (tempfile + rename) to prevent corruption on crash.
+
+## Security
+
+Hardcoded, non-negotiable. Email is not trusted data.
+
+- **No instructions following**: Ignores directives in email body.
+- **No URLs preserved**: Strips all URLs before storage. Strips zero-width Unicode first (prevents splitting URLs).
+- **No auto-actions**: Never auto-replies, auto-forwards, auto-deletes.
+- **Conservative default**: Defaults to `suspicious` when ambiguous.
+- **SSRF-protected webhooks**: Blocks private IPs (10.0.0.0/8, 127.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16), localhost, link-local, IPv6 private. Fails closed on resolution failure.
+- **Credential scrubbing**: Redacts AWS keys, Slack tokens, JWTs, DB connection strings, PEM blocks, password patterns before output.
+- **HTML sanitization**: Whitelist of allowed tags before storing.
+- **ReDoS prevention**: Truncates content (102KB by default) before regex to prevent catastrophic backtracking.
+- **Format-string injection prevention**: Template variables escaped properly.
+- **YAML injection prevention**: Newlines stripped from frontmatter values.
+- **Atomic state writes**: Tempfile + rename, never partial writes.
+- **LLM summarizer safety**: Passes prompt via stdin (not argv).
+- **Custom script path validation**: No path traversal.
+
+## Provider Abstraction
+
+Swap email providers without rewriting classifier logic. Ships with `GmailCLIProvider` (wraps any CLI like `gws`, `gmail-cli`).
+
+Implement your own:
+
+```python
+from providers import EmailProvider
+
+class MyProvider(EmailProvider):
+    def list_unread(self, query: str, max_results: int = 50) -> List[dict]:
+        """Return list of message stubs."""
+        pass
+
+    def get_message(self, msg_id: str) -> Optional[dict]:
+        """Fetch metadata (headers + snippet)."""
+        pass
+
+    def get_message_full(self, msg_id: str) -> Optional[dict]:
+        """Fetch full MIME message."""
+        pass
+
+    def mark_read(self, msg_id: str) -> bool:
+        """Remove UNREAD label."""
+        pass
+
+    def extract_headers(self, msg: dict) -> dict:
+        """Return normalized {header: value} dict."""
+        pass
+
+    def execute_actions(self, msg_id: str, actions: list, dry_run: bool) -> None:
+        """Apply category actions (star, archive, etc.)."""
+        pass
+
+    def get_body_text(self, msg: dict) -> str:
+        """Extract best-effort plain text from MIME."""
+        pass
 ```
 
-**"Provider error: [Command not found]"**
-Verify your CLI tool path in config.yaml. If using `gws`, ensure it's in your PATH:
-```bash
-which gws
-# or set explicit path: cli_path: /full/path/to/gws
+Then in config:
+
+```yaml
+provider:
+  type: my_custom_provider
+  # your provider-specific settings
 ```
 
-**"No messages"**
-Gmail query returned zero emails. Check:
-- `--lookback` parameter (is inbox actually unread in that window?)
-- `--max` limit (is it too low?)
-- `--dry-run` to see what's happening
+## Examples
 
-**"Emails not marked read"**
-Check provider config. `gws` requires correct userId (usually "me").
+### Trap Phishing
+
+```yaml
+classification:
+  suspicious:
+    priority: 20
+    terms:
+      - verify your account
+      - confirm your password
+      - unusual activity
+      - urgent action required
+      - click here to confirm
+    min_matches: 2
+    actions: [leave_unread]  # Don't auto-mark read
+```
+
+### Route Newsletters to Archive
+
+```yaml
+classification:
+  newsletter:
+    priority: 50
+    sender_patterns: [substack, beehiiv, mailchimp]
+    check_unsubscribe_header: true
+    actions: [label:Newsletters, archive, mark_read]
+```
+
+### Highlight Auth Emails
+
+```yaml
+classification:
+  auth:
+    priority: 10
+    domains: [github.com, stripe.com, aws.amazon.com]
+    terms: [two-factor, otp, security alert, new device]
+    require_both: true
+    actions: [star, leave_unread]
+```
+
+### Log Everything to ChromaDB
+
+```yaml
+command:
+  enabled: true
+  cmd: "python3 -c 'import json, sys; sys.stdin.read()'"  # just read stdin
+  categories: []  # all categories
+```
 
 ## License
 
-MIT. See LICENSE file.
+MIT
 
-## Author
-
-Edgeless (thedavidmurray on GitHub)
-
-## Contributing
-
-Issues and pull requests welcome. Keep security rules in mind: never trust email content, always default suspicious.
+Author: thedavidmurray

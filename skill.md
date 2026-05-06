@@ -2,10 +2,10 @@
 name: email-inbox-triage
 title: Email Inbox Triage
 description: >
-  Classify and route unread Gmail messages. Categories: auth, actionable,
-  suspicious, newsletter, social, noise. Configurable classification rules,
-  interpretation layers, and output backends. Trigger: email, inbox, triage,
-  gmail, newsletter, phishing, unread.
+  Classify and route unread Gmail messages with weighted scoring, exact domain
+  matching, per-category Gmail actions, and 7 output backends (console, markdown,
+  newsletter, webhook, JSONL, command pipe, custom script). Trigger: email, inbox,
+  triage, gmail, newsletter, phishing, unread, classify.
 tier: general
 wing: paperclip-org
 ---
@@ -35,32 +35,64 @@ python email_triage.py --dry-run       # test without side effects
 
 | Category | Trigger | Default action |
 |----------|---------|----------------|
-| auth | Trusted domain + auth term (2FA, OTP, etc.) | High priority alert |
-| actionable | Trusted domain, no auth signal | Medium priority, summarize |
-| suspicious | 2+ phishing terms | Flag for review |
-| newsletter | List-Unsubscribe header or newsletter sender | Write to KB |
+| auth | Trusted domain + auth term (require_both) | Star, leave unread |
+| actionable | Trusted domain, no auth signal | Mark read |
+| suspicious | 2+ phishing terms (min_matches) | Leave unread |
+| newsletter | List-Unsubscribe header or sender pattern | Mark read, save to KB |
 | social | Chat/social platform digest | Mark read |
 | noise | No recognizable signal | Mark read |
+
+Classification uses exact domain matching (subdomain-aware), weighted scoring,
+and priority-based rule evaluation. First clear winner wins.
+
+## Per-category Gmail actions
+
+Configure actions per rule:
+```yaml
+classification:
+  auth:
+    actions: [star, leave_unread]
+  newsletter:
+    actions: [label:Newsletters, archive, mark_read]
+```
+
+Available: `star`, `archive`, `mark_read`, `leave_unread`, `label:Name`, `mark_spam`.
 
 ## Interpretation layers
 
 Configure in `config.yaml` under `interpretation.layers`:
 
 1. **classify** — rule-based categorization (always on)
-2. **extract** — pull snippet, strip URLs/signatures
-3. **summarize** — LLM-generated 1-2 sentence summary (optional, needs llm_command)
-4. **knowledge_base** — route newsletters to markdown notes (optional)
+2. **extract** — pull snippet, strip URLs/signatures. Set `fetch_full_body: true` for full MIME body
+3. **summarize** — LLM-generated summary (optional, needs `llm_command`)
 
 ## Output backends
 
 - **console** — table or JSON to stdout
-- **markdown** — write triage reports or per-email notes
-- **webhook** — POST to Slack, Discord, etc.
-- **json_log** — append to JSON log file
+- **markdown** — per-run or per-email triage reports with YAML frontmatter
+- **newsletter** — route newsletter emails to markdown notes (organized by sender domain, message-ID dedup)
+- **webhook** — POST to Slack, Discord, etc. (SSRF-protected)
+- **json_log** — JSONL append-only log
+- **command** — pipe emails as JSON to any shell command (vector DBs, databases, APIs)
+- **custom_script** — call a Python function per email (plugin system)
+
+## CLI flags
+
+```
+--config PATH              Config file path (default: config.yaml)
+--lookback QUERY           Override Gmail query (e.g. newer_than:2d)
+--max N                    Override max emails per run
+--dry-run                  Classify and report, no side effects
+--report-only              Print classifications only
+--reclassify MSG_ID CAT    Override stored classification
+--review                   Show recently classified emails
+--review-last N            Number to show with --review (default: 20)
+--verbose                  Debug logging
+```
 
 ## When acting on classified emails
 
-- **auth**: Tell the user what action is needed. Do NOT paste OTPs, links, or secrets. Let them open Gmail directly.
+- **auth**: Tell the user what action is needed. Do NOT paste OTPs, links, or secrets.
 - **suspicious**: Do not verify the claim. Recommend marking as spam.
 - **actionable**: Summarize in 1-2 sentences. Propose next action if clear.
 - **newsletter**: Already routed to KB. No action needed.
