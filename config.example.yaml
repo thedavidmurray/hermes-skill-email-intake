@@ -1,0 +1,198 @@
+# Email Triage Configuration
+# Copy to config.yaml and customize
+
+# Email provider settings
+provider:
+  # "gmail_cli" uses a CLI tool (like gws) to access Gmail API
+  # "gmail_api" uses Gmail API directly with OAuth credentials
+  type: gmail_cli
+  cli_path: gws  # path to your Gmail CLI tool
+  account: me    # Gmail userId
+
+# Classification rules
+# Each rule has: name, match conditions, priority (lower = checked first)
+classification:
+  # Auth/security signals - highest priority
+  auth:
+    priority: 10
+    domains:
+      - github.com
+      - anthropic.com
+      - google.com
+      - accounts.google.com
+      - cloudflare.com
+      - stripe.com
+      - vercel.com
+      - supabase.com
+      - hetzner.com
+    terms:
+      - two-factor
+      - 2fa
+      - recovery
+      - otp
+      - one-time password
+      - verify your identity
+      - security alert
+      - sign-in
+      - new device
+      - account access
+      - personal access token
+      - token expir
+      - password expir
+    # Requires BOTH a domain match AND a term match
+    require_both: true
+
+  # Suspicious - phishing/scam indicators
+  suspicious:
+    priority: 20
+    terms:
+      - urgent
+      - verify your account
+      - confirm your
+      - act now
+      - limited time
+      - click here to confirm
+      - suspended
+      - unusual activity
+      - wire transfer
+      - tax refund
+      - lottery
+      - prize
+      - you have won
+    # Triggers when 2+ terms match
+    min_matches: 2
+
+  # Actionable - trusted vendor, not auth
+  actionable:
+    priority: 30
+    # Uses the same domains as auth, but only when auth terms are absent
+    inherit_domains_from: auth
+
+  # Social digests
+  social:
+    priority: 40
+    sender_patterns:
+      - slack
+      - discord
+      - twitter
+      - linkedin
+      - facebook
+      - notifications@github.com
+
+  # Newsletters
+  newsletter:
+    priority: 50
+    sender_patterns:
+      - substack
+      - beehiiv
+      - newsletter@
+      - digest@
+      - no-reply@
+      - noreply@
+      - marketing@
+      - mailchimp
+      - sendgrid
+    # Also triggers on List-Unsubscribe header
+    check_unsubscribe_header: true
+
+  # Everything else
+  noise:
+    priority: 100
+    # Catch-all for unrecognized senders
+
+# Interpretation layers
+# Controls how much processing happens before output.
+# Layers run in order. Each layer enriches the classification result.
+interpretation:
+  layers:
+    # Layer 1: Basic classification (always runs)
+    - name: classify
+      enabled: true
+
+    # Layer 2: Content extraction
+    # Pulls key info from the email body (dates, names, amounts, action items)
+    - name: extract
+      enabled: true
+      settings:
+        max_snippet_length: 1500
+        strip_urls: true       # replace URLs with [URL stripped]
+        strip_signatures: true # remove email signatures
+
+    # Layer 3: Summarization
+    # Generates a 1-2 sentence summary of the email's purpose
+    - name: summarize
+      enabled: false  # requires LLM - set llm_command below
+      settings:
+        llm_command: ""  # e.g., "llm -m gpt-4o-mini" or "claude -p"
+        max_tokens: 150
+
+    # Layer 4: Knowledge base integration
+    # Routes newsletters and actionable items to your KB
+    - name: knowledge_base
+      enabled: false
+      settings:
+        # Where to write newsletter notes
+        newsletter_dir: "./inbox/newsletters"
+        # Frontmatter format for notes
+        frontmatter_template: |
+          ---
+          type: email-newsletter
+          sender: "{sender}"
+          subject: "{subject}"
+          date: "{date}"
+          gmail_id: "{message_id}"
+          captured: "{today}"
+          ---
+
+# Output backends
+# Where classified emails get reported
+outputs:
+  # Print to console (always available)
+  console:
+    enabled: true
+    format: table  # "table" or "json"
+
+  # Write markdown files
+  markdown:
+    enabled: false
+    output_dir: ./inbox/triage
+    # One file per run, or one file per email
+    mode: per_run  # "per_run" or "per_email"
+
+  # Post to webhook (Slack, Discord, etc.)
+  webhook:
+    enabled: false
+    url: ""
+    # Template for webhook payload
+    payload_template: |
+      {
+        "text": "[{category}] {sender}: {subject}"
+      }
+
+  # Write JSON log
+  json_log:
+    enabled: true
+    path: ./logs/email_triage.json
+
+# Security settings
+security:
+  # Scrub sensitive patterns from extracted content
+  scrub_content: true
+  # Strip all URLs from email content before storage
+  strip_urls: true
+  # Default classification when ambiguous
+  default_category: suspicious
+  # Maximum email body size to process (bytes)
+  max_body_size: 102400  # 100KB
+
+# State tracking
+state:
+  # Track processed message IDs to avoid re-processing
+  enabled: true
+  path: ./state/processed.json
+
+# Schedule (informational - actual scheduling is external)
+schedule:
+  interval: hourly
+  lookback: "newer_than:1d"
+  max_per_run: 50
