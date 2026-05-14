@@ -1,0 +1,5 @@
+pyyaml>=5.0
+
+# Optional: faster/safer HTML sanitization (falls back to regex without these)
+# nh3
+# bleach

@@ -179,6 +179,7 @@ class EmailClassifier:
             "suspicious": 0.0,
             "social": 0.0,
             "newsletter": 0.0,
+            "noise": 0.0,
         }
 
         if domain_hit:
@@ -227,20 +228,15 @@ class EmailClassifier:
             # Category-specific thresholds and confidence computation
             if name == "auth":
                 if domain_hit and term_hit:
-                    return ClassificationResult(
-                        "auth",
-                        f"auth signal from trusted domain ({sender[:60]})",
-                        confidence=1.0,
-                        sender=sender,
-                        subject=subject,
+                    confidence = 0.8 if is_noreply else 1.0
+                    reason = (
+                        f"auth signal from automated sender ({sender[:60]})"
+                        if is_noreply
+                        else f"auth signal from trusted domain ({sender[:60]})"
                     )
-                # Require domain_hit here too: a noreply from an untrusted
-                # domain that happens to mention auth terms is NOT auth.
-                if domain_hit and term_hit and is_noreply:
                     return ClassificationResult(
-                        "auth",
-                        f"auth signal from automated sender ({sender[:60]})",
-                        confidence=0.8,
+                        "auth", reason,
+                        confidence=confidence,
                         sender=sender,
                         subject=subject,
                     )

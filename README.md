@@ -18,7 +18,7 @@ Rule-based email classifier that routes messages to the right handler. Pluggable
 
 ## Install
 
-Requires Python 3.8+ and PyYAML.
+Requires Python 3.10+ and PyYAML.
 
 ```bash
 pip install pyyaml
@@ -279,7 +279,7 @@ Configure what happens to each classified email. Available actions:
 - `archive` — remove from inbox
 - `mark_read` — remove UNREAD label
 - `leave_unread` — keep UNREAD
-- `label:LabelName` — add custom label
+- `label:LABEL_ID` — add label by Gmail API label ID (use `gws gmail users labels list` to find IDs)
 - `mark_spam` — move to spam
 
 Example:
@@ -289,7 +289,7 @@ classification:
   auth:
     actions: [star, leave_unread]
   newsletter:
-    actions: [label:Newsletters, archive, mark_read]
+    actions: [label:Label_5, archive, mark_read]  # use Gmail label ID, not display name
   suspicious:
     actions: [leave_unread]
   actionable:
@@ -403,7 +403,7 @@ classification:
     priority: 50
     sender_patterns: [substack, beehiiv, mailchimp]
     check_unsubscribe_header: true
-    actions: [label:Newsletters, archive, mark_read]
+    actions: [label:Label_5, archive, mark_read]  # use Gmail label ID, not display name
 ```
 
 ### Highlight Auth Emails

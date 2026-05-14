@@ -88,6 +88,8 @@ classification:
     actions: [mark_read]
 
   # Newsletters
+  # Note: label: actions require Gmail API label IDs, not display names.
+  # Run `gws gmail users labels list` to find label IDs for your account.
   newsletter:
     priority: 50
     sender_patterns:

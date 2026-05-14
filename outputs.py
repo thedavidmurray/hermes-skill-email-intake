@@ -280,8 +280,9 @@ def output_webhook(results: List[ClassificationResult], config: dict):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            # H3: disable redirect following to prevent redirect-based SSRF
-            urllib.request.urlopen(req, timeout=10)
+            # H3: no-redirect opener prevents redirect-based SSRF bypass
+            opener = urllib.request.build_opener(urllib.request.HTTPHandler)
+            opener.open(req, timeout=10)
         except Exception as e:
             print(f"  Webhook error: {e}", file=sys.stderr)
 

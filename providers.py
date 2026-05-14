@@ -37,6 +37,14 @@ class EmailProvider(abc.ABC):
     def extract_headers(self, msg: dict) -> dict:
         """Extract a normalised {header_name: value} dict from a raw message."""
 
+    @abc.abstractmethod
+    def execute_actions(self, msg_id: str, actions: List[str], dry_run: bool = False) -> List[str]:
+        """Execute a list of action strings against a message."""
+
+    @abc.abstractmethod
+    def get_body_text(self, msg: dict) -> str:
+        """Extract the best available plain-text body from a message."""
+
 
 class GmailCLIProvider(EmailProvider):
     """Fetch Gmail via a CLI wrapper (like gws)."""

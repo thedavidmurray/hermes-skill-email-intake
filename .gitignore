@@ -1,0 +1,7 @@
+config.yaml
+state/
+logs/
+inbox/
+__pycache__/
+*.pyc
+.env
