@@ -7,7 +7,7 @@ description: >
   newsletter, webhook, JSONL, command pipe, custom script). Trigger: email, inbox,
   triage, gmail, newsletter, phishing, unread, classify.
 tier: general
-wing: paperclip-org
+wing: productivity
 ---
 
 # Email Inbox Triage
